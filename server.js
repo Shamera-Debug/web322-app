@@ -19,10 +19,70 @@ const streamifier = require('streamifier');
 const exphbs = require("express-handlebars");
 const path = require("path");
 const stripJs = require('strip-js');
+const authData = require(__dirname + "/auth-service.js");
+const clientSessions = require('client-sessions');
+
 
 const app = express();
 
+app.use(clientSessions( {
+    cookieName: "session",
+    secret: "web322",
+    duration: 2*60*1000,
+    activeDuration: 1000*60
+}));
 
+app.use(function(req, res, next) {
+    res.locals.session = req.session;
+    next();
+  });
+  
+  ensureLogin = (req,res,next) => {
+    if (!(req.session.user)) {
+        res.redirect("/login");
+    }
+    else { next(); }
+};
+
+app.get("/login", (req,res) => {
+    res.render("login");
+});
+
+app.get("/register", (req,res) => {
+    res.render("register");
+});
+
+app.post("/register", (req,res) => {
+    authData.registerUser(req.body)
+    .then(() => res.render("register", {successMessage: "User created" } ))
+    .catch (err => res.render("register", {errorMessage: err, userName:req.body.userName }) )
+});
+
+app.post("/login", (req,res) => {
+    req.body.userAgent = req.get('User-Agent');
+    authData.checkUser(req.body).then((user) => {
+        req.session.user = {
+            userName: user.userName,
+            email: user.email,
+            loginHistory: user.loginHistory
+        }
+    
+        res.redirect('/posts');
+    })
+    
+    .catch(err => {
+        res.render("login", {errorMessage:err, userName:req.body.userName} )
+    }) 
+});
+
+app.get("/logout", (req,res) => {
+    req.session.reset();
+    res.redirect("/login");
+});
+
+app.get("/userHistory", ensureLogin, (req,res) => {
+    res.render("userHistory", {user:req.session.user} );
+});
 
 const HTTP_PORT = process.env.PORT || 8080;
 
@@ -127,7 +187,7 @@ app.get('/blog', async (req, res) => {
 
 });
 
-app.get('/posts', (req, res) => {
+app.get('/posts', ensureLogin, (req, res) => {
 
     let queryPromise = null;
 
@@ -154,7 +214,7 @@ app.get('/posts', (req, res) => {
 
 });
 
-app.post("/posts/add", upload.single("featureImage"), (req,res)=>{
+app.post("/posts/add", ensureLogin, upload.single("featureImage"), (req,res)=>{
 
     if(req.file){
         let streamUpload = (req) => {
@@ -197,13 +257,13 @@ app.post("/posts/add", upload.single("featureImage"), (req,res)=>{
     }   
 });
 
-app.get('/posts/add', (req, res) => {
+app.get('/posts/add', ensureLogin, (req, res) => {
     blogData.getCategories()
     .then(data =>res.render("addPost", {categories: data}))
     .catch(err => res.render("addPost", {categories: []}));
 });
 
-app.get('/post/:id', (req,res)=>{
+app.get('/post/:id', ensureLogin, (req,res)=>{
     blogData.getPostById(req.params.id).then(data=>{
         res.json(data);
     }).catch(err=>{
@@ -261,7 +321,7 @@ app.get('/blog/:id', async (req, res) => {
     res.render("blog", {data: viewData})
 });
 
-app.get('/categories', (req, res) => {
+app.get('/categories', ensureLogin, (req, res) => {
     blogData.getCategories().then((data => {
         if (data.length > 0)
         {
@@ -276,7 +336,7 @@ app.get('/categories', (req, res) => {
     });
 });
 
-app.post("/categories/add", (req,res)=>{
+app.post("/categories/add", ensureLogin, (req,res)=>{
     blogData.addCategory(req.body).then(()=>{
         res.redirect("/categories");
     }).catch(err=>{
@@ -284,11 +344,11 @@ app.post("/categories/add", (req,res)=>{
     })
 });
 
-app.get('/categories/add', (req, res) => {
+app.get('/categories/add', ensureLogin, (req, res) => {
     res.render("addCategory");
 });
 
-app.get('/categories/delete/:id', (req,res)=>{
+app.get('/categories/delete/:id', ensureLogin, (req,res)=>{
     blogData.deleteCategoryById(req.params.id).then(data=>{
         res.redirect("/categories");
     }).catch(err=>{
@@ -296,7 +356,7 @@ app.get('/categories/delete/:id', (req,res)=>{
     });
 });
 
-app.get('/posts/delete/:id', (req,res)=>{
+app.get('/posts/delete/:id', ensureLogin, (req,res)=>{
     blogData.deletePostById(req.params.id).then(data=>{
         res.redirect("/posts");
     }).catch(err=>{
@@ -309,10 +369,12 @@ app.use((req, res) => {
     res.status(404).render("404");
 })
 
-blogData.initialize().then(() => {
-    app.listen(HTTP_PORT, () => {
-        console.log('server listening on: ' + HTTP_PORT);
+blogData.initialize()
+.then(authData.initialize)
+.then(function(){
+    app.listen(HTTP_PORT, function(){
+        console.log("app listening on: " + HTTP_PORT)
     });
-}).catch((err) => {
-    console.log(err);
-})
+}).catch(function(err){
+    console.log("unable to start server: " + err);
+});
